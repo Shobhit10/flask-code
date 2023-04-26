@@ -1,0 +1,291 @@
+# Define provider
+provider "aws" {
+  region = "us-west-2"
+}
+
+# Define VPC
+resource "aws_vpc" "vpc" {
+  cidr_block = "10.0.0.0/16"
+}
+
+# Define subnets
+resource "aws_subnet" "public_subnet_1" {
+  vpc_id = aws_vpc.vpc.id
+  cidr_block = "10.0.1.0/24"
+  availability_zone = "us-east-1a"
+}
+
+resource "aws_subnet" "public_subnet_2" {
+  vpc_id = aws_vpc.vpc.id
+  cidr_block = "10.0.2.0/24"
+  availability_zone = "us-east-1b"
+}
+
+resource "aws_subnet" "private_subnet_1" {
+  vpc_id = aws_vpc.vpc.id
+  cidr_block = "10.0.3.0/24"
+  availability_zone = "us-east-1a"
+}
+
+resource "aws_subnet" "private_subnet_2" {
+  vpc_id = aws_vpc.vpc.id
+  cidr_block = "10.0.4.0/24"
+  availability_zone = "us-east-1b"
+}
+
+# Define security groups
+resource "aws_security_group" "public_sg" {
+  name_prefix = "public_sg"
+  vpc_id = aws_vpc.vpc.id
+
+  ingress {
+    from_port = 80
+    to_port = 80
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port = 443
+    to_port = 443
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "private_sg" {
+  name_prefix = "private_sg"
+  vpc_id = aws_vpc.vpc.id
+}
+
+
+# Define ACM certificate
+resource "aws_acm_certificate" "ssl_cert" {
+  domain_name = "example.com"
+  validation_method = "DNS"
+
+  tags = {
+    Name = "example-ssl-cert"
+  }
+}
+
+# Define DNS validation record
+resource "aws_route53_record" "ssl_cert_validation" {
+  zone_id = "your_route53_zone_id"
+  name = aws_acm_certificate.ssl_cert.domain_validation_options.0.resource_record_name
+  type = aws_acm_certificate.ssl_cert.domain_validation_options.0.resource_record_type
+  records = [aws_acm_certificate.ssl_cert.domain_validation_options.0.resource_record_value]
+  ttl = 60
+}
+
+# Define ACM certificate validation
+resource "aws_acm_certificate_validation" "ssl_cert_validation" {
+  certificate_arn = aws_acm_certificate.ssl_cert.arn
+
+  validation_record_fqdns = [
+    aws_route53_record.ssl_cert_validation.fqdn,
+  ]
+}
+
+# Define ALB
+resource "aws_lb" "alb" {
+  name = "example-alb"
+  subnets = [aws_subnet.public_subnet_1.id, aws_subnet.public_subnet_2.id]
+  security_groups = [aws_security_group.public_sg.id]
+}
+
+resource "aws_lb_listener" "listener" {
+  load_balancer_arn = aws_lb.alb.arn
+  port = 443
+  protocol = "HTTPS"
+  ssl_policy = "ELBSecurityPolicy-2016-08"
+
+  certificate_arn = aws_acm_certificate.ssl_cert.arn
+
+  default_action {
+    type = "forward"
+    target_group_arn = aws_lb_target_group.target_group.arn
+  }
+}
+
+# Define target group
+resource "aws_lb_target_group" "target_group" {
+  name_prefix = "example-target-group"
+  port = 80
+  protocol = "HTTP"
+  vpc_id = aws_vpc.vpc.id
+  health_check {
+    protocol = "HTTP"
+    path = "/"
+  }
+}
+
+# Define listener rule to associate target group with ALB
+resource "aws_lb_listener_rule" "listener_rule" {
+  listener_arn = aws_lb_listener.listener.arn
+
+  action {
+    type = "forward"
+    target_group_arn = aws_lb_target_group.target_group.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/"]
+    }
+  }
+}
+
+
+
+
+# Define EKS cluster
+resource "aws_eks_cluster" "example" {
+  name     = "example-cluster"
+  role_arn = aws_iam_role.eks.arn
+
+  vpc_config {
+    subnet_ids = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.eks]
+}
+
+# Define launch configuration
+resource "aws_launch_configuration" "asg_launch_config" {
+  name_prefix   = "asg_launch_config"
+  image_id      = "ami-0c55b159cbfafe1f0"
+  instance_type = "t2.micro"
+  iam_instance_profile = aws_iam_instance_profile.asg_ec2_profile.name
+
+  # Define user data script to pull Docker image from ECR
+  user_data = <<-EOF
+              #!/bin/bash
+              $(aws ecr get-login --no-include-email --region ${var.region})
+              docker pull ${var.ecr_repository_url}:${var.ecr_image_tag}
+              EOF
+  
+  # Define provisioner for Docker image
+  provisioner "docker" {
+    image = "${var.ecr_repository_url}:${var.ecr_image_tag}"
+    pull_triggers = ["always"]
+  }
+  
+
+# Define ASG
+resource "aws_autoscaling_group" "example" {
+  name_prefix = "example-asg-"
+  launch_configuration = aws_launch_configuration.example.id
+  vpc_zone_identifier = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
+  min_size = 3
+  max_size = 5
+}
+
+# Define SQL database
+# Define provider
+provider "aws" {
+  region = "us-east-1"
+}
+
+# Define VPC
+resource "aws_vpc" "vpc" {
+  cidr_block = "10.0.0.0/16"
+}
+
+# Define subnets
+resource "aws_subnet" "subnet_1" {
+  vpc_id = aws_vpc.vpc.id
+  cidr_block = "10.0.1.0/24"
+  availability_zone = "us-east-1a"
+}
+
+resource "aws_subnet" "subnet_2" {
+  vpc_id = aws_vpc.vpc.id
+  cidr_block = "10.0.2.0/24"
+  availability_zone = "us-east-1b"
+}
+
+# Define security group
+resource "aws_security_group" "db_sg" {
+  name_prefix = "db_sg"
+  vpc_id = aws_vpc.vpc.id
+
+  ingress {
+    from_port = 0
+    to_port = 65535
+    protocol = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]
+  }
+
+  ingress {
+    from_port = 3306
+    to_port = 3306
+    protocol = "tcp"
+    security_groups = [aws_security_group.db_sg.id]
+  }
+}
+
+
+# Define secret
+resource "aws_secretsmanager_secret" "db_secret" {
+  name = "db_credentials"
+
+  tags = {
+    Environment = "production"
+  }
+}
+
+# Define secret version
+resource "aws_secretsmanager_secret_version" "db_secret_version" {
+  secret_id     = aws_secretsmanager_secret.db_secret.id
+  secret_string = jsonencode({
+    username = "db_user",
+    password = random_password.db_password.result
+  })
+}
+
+# Define RDS primary instance
+resource "aws_db_instance" "primary_db" {
+  identifier = "primary-db"
+  engine = "mysql"
+  engine_version = "5.7"
+  instance_class = "db.t2.micro"
+  allocated_storage = 20
+  storage_type = "gp2"
+  storage_encrypted = true
+  multi_az = true
+  vpc_security_group_ids = [aws_security_group.db_sg.id]
+  db_subnet_group_name = "db-subnet-group"
+
+  username = aws_secretsmanager_secret_version.db_secret_version.secret_string.username
+  password = aws_secretsmanager_secret_version.db_secret_version.secret_string.password
+
+  tags = {
+    Name = "Primary DB"
+  }
+}
+
+# Define RDS secondary instance
+resource "aws_db_instance" "secondary_db" {
+  identifier = "secondary-db"
+  engine = "mysql"
+  engine_version = "5.7"
+  instance_class = "db.t2.micro"
+  allocated_storage = 20
+  storage_type = "gp2"
+  storage_encrypted = true
+  multi_az = true
+  vpc_security_group_ids = [aws_security_group.db_sg.id]
+  db_subnet_group_name = "db-subnet-group"
+
+  username = aws_secretsmanager_secret_version.db_secret_version.secret_string.username
+  password = aws_secretsmanager_secret_version.db_secret_version.secret_string.password
+
+  tags = {
+    Name = "Secondary DB"
+  }
+
+  # Define replication source
+  replication_source_identifier = aws_db_instance.primary_db.id
+}
+              
